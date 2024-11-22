@@ -93,26 +93,48 @@ func (m model) View() string {
 
 // Execute the selected setup steps
 func executeSetupSteps(m model) {
-	commands := map[int]string{
-		0: "apt update && apt upgrade -y && apt autoclean && apt autoremove -y",
-		1: "apt install -y ufw && ufw allow 'OpenSSH' && ufw enable",
-		2: "apt install -y apache2 curl && systemctl enable apache2 && ufw allow in 'Apache Full' && a2dissite 000-default.conf",
-		3: `apt install -y mariadb-server && mysql_secure_installation`,
-		4: `add-apt-repository ppa:ondrej/php && apt update &&
+	commands := map[string]string{
+		"update_packages":  "apt update && apt upgrade -y && apt autoclean && apt autoremove -y",
+		"setup_firewall":   "apt install -y ufw && ufw allow 'OpenSSH' && ufw enable",
+		"install_apache":   "apt install -y apache2 curl && systemctl enable apache2 && ufw allow in 'Apache Full' && a2dissite 000-default.conf",
+		"install_mariadb":  `apt install -y mariadb-server && mysql_secure_installation`,
+		"install_php":      `add-apt-repository ppa:ondrej/php && apt update &&
 apt install -y php8.3 libapache2-mod-php php8.3-mysql php8.3-gd php8.3-curl php8.3-xml composer`,
-		5: "apt install -y nodejs npm && npm install -g n && n 20",
-		6: `useradd app && usermod -aG sudo,www-data app`,
+		"install_nodejs":   "apt install -y nodejs npm && npm install -g n && n 20",
+		"create_app_user":  `useradd app && usermod -aG sudo,www-data app`,
+		"setup_ssh_keys":   "", // Placeholder; SSH setup logic is handled dynamically
+		"clone_repository": "", // Placeholder; cloning logic is handled dynamically
+		"configure_apache": "", // Placeholder; virtual host logic is handled dynamically
+		"restart_apache":   "systemctl restart apache2",
+		"reboot_server":    "reboot",
 	}
 
 	reader := bufio.NewReader(os.Stdin)
 
+	// Map the steps to corresponding command keys
+	stepToCommand := map[int]string{
+		0:  "update_packages",
+		1:  "setup_firewall",
+		2:  "install_apache",
+		3:  "install_mariadb",
+		4:  "install_php",
+		5:  "install_nodejs",
+		6:  "create_app_user",
+		7:  "setup_ssh_keys",
+		8:  "clone_repository",
+		9:  "configure_apache",
+		10: "restart_apache",
+		11: "reboot_server",
+	}
+
 	for i, stepSelected := range m.selected {
 		if stepSelected {
+			commandKey := stepToCommand[i]
 			fmt.Printf("Running: %s...\n", m.steps[i])
 
-			// Prompt for inputs if needed
-
-			if i == 7 { // Set up SSH and GitHub key
+			// Special handling for dynamic commands
+			switch commandKey {
+			case "setup_ssh_keys":
 				fmt.Println("Paste public SSH keys to add to /home/app/.ssh/authorized_keys (leave empty to finish):")
 				var keys []string
 				for {
@@ -141,7 +163,8 @@ chown -R app:app /home/app/.ssh`
 
 				// Generate SSH key for the app user
 				fmt.Println("Generating SSH key for app user...")
-				generateSSHKeyCmd := `su - app -c "ssh-keygen -t rsa -b 4096 -f /home/app/.ssh/id_rsa -q -N ''"`
+				generateSSHKeyCmd := `
+su - app -c "ssh-keygen -t rsa -b 4096 -f /home/app/.ssh/id_rsa -q -N ''"`
 				runCommand(generateSSHKeyCmd)
 
 				// Read the public key to display it
@@ -152,9 +175,8 @@ chown -R app:app /home/app/.ssh`
 				// Wait for the user to confirm
 				fmt.Println("\nOnce the key is added to GitHub, press Enter to continue.")
 				_, _ = reader.ReadString('\n') // Wait for user input
-			}
 
-			if i == 8 { // Clone project repository
+			case "clone_repository":
 				fmt.Print("Enter Project Name: ")
 				projectName, _ := reader.ReadString('\n')
 				projectName = strings.TrimSpace(projectName)
@@ -163,16 +185,16 @@ chown -R app:app /home/app/.ssh`
 				gitURL, _ := reader.ReadString('\n')
 				gitURL = strings.TrimSpace(gitURL)
 
-				commands[8] = fmt.Sprintf(`git clone %s /var/www/%s && chown -R www-data:www-data /var/www/%s`,
+				cloneCmd := fmt.Sprintf(`git clone %s /var/www/%s && chown -R www-data:www-data /var/www/%s`,
 					gitURL, projectName, projectName)
-			}
+				runCommand(cloneCmd)
 
-			if i == 9 { // Configure Apache virtual host
+			case "configure_apache":
 				fmt.Print("Enter Project Name: ")
 				projectName, _ := reader.ReadString('\n')
 				projectName = strings.TrimSpace(projectName)
 
-				commands[9] = fmt.Sprintf(`echo '<VirtualHost *:80>
+				configureApacheCmd := fmt.Sprintf(`echo '<VirtualHost *:80>
 DocumentRoot /var/www/%s/public
 <Directory /var/www/%s/public>
 AllowOverride All
@@ -180,10 +202,12 @@ Options +Indexes
 </Directory>
 </VirtualHost>' | tee /etc/apache2/sites-available/%s.conf &&
 a2ensite %s.conf`, projectName, projectName, projectName, projectName)
-			}
+				runCommand(configureApacheCmd)
 
-			// Run the command
-			runCommand(commands[i])
+			default:
+				// Run the static command
+				runCommand(commands[commandKey])
+			}
 		}
 	}
 }
