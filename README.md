@@ -17,14 +17,10 @@ Then build the docker container and run it to test the cli in a fresh ubuntu env
 
 `docker run -ti ubuntu-sandbox /bin/bash`
 
-Then run `setup` in the container to test thes CLI.
+Then run `setup` in the container to test the CLI.
 
 ## Known Issues
 
 * UFW does not work inside of the Docker container causing the script to exit with an error
 
-* Options where user input is required does not behave properly.
-
-* Need to implement dynamic inputs for git url, project name, etc.
-
-* Need to generate a SSH key and output it to the user so they can import the key into GitHub.
+* The MariaDB setup doesn't work properly

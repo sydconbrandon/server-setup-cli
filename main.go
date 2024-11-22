@@ -1,33 +1,24 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 type model struct {
-	steps       []string
-	selected    map[int]bool
-	cursor      int
-	proceed     bool
-	textInput   textinput.Model // For collecting project name and Git URL
-	stepInput   int             // Track if we are in the input step
-	inputPrompt string          // Current prompt
-	inputData   map[string]string
+	steps    []string
+	selected map[int]bool
+	cursor   int
+	proceed  bool
 }
 
 // Initialize the model with the setup steps
 func initialModel() model {
-	input := textinput.New()
-	input.Placeholder = "Enter value"
-	input.Focus()
-	input.CharLimit = 100
-
 	return model{
 		steps: []string{
 			"Update server packages and dependencies",
@@ -43,53 +34,18 @@ func initialModel() model {
 			"Restart Apache",
 			"Reboot server",
 		},
-		selected:    make(map[int]bool),
-		textInput:   input,
-		stepInput:   -1, // -1 indicates no active input
-		inputPrompt: "",
-		inputData:   make(map[string]string), // Store input data (e.g., project name and URL)
+		selected: make(map[int]bool),
 	}
 }
 
 // Update function to handle user input
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	return nil
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if m.stepInput != -1 {
-			// Handle text input for project name or Git URL
-			switch msg.String() {
-			case "enter":
-				// Save input and move to the next prompt or back to the main flow
-				if m.stepInput == 0 {
-					m.inputData["project_name"] = m.textInput.Value()
-					m.stepInput = 1
-					m.inputPrompt = "Enter Git URL"
-					m.textInput.SetValue("")
-					return m, nil
-				}
-				if m.stepInput == 1 {
-					m.inputData["git_url"] = m.textInput.Value()
-					m.stepInput = -1 // End input phase
-					m.textInput.Blur()
-					return m, nil
-				}
-			case "esc":
-				m.stepInput = -1 // Cancel input
-				m.textInput.Blur()
-				return m, nil
-			}
-
-			// Pass input to the textinput model
-			var cmd tea.Cmd
-			m.textInput, cmd = m.textInput.Update(msg)
-			return m, cmd
-		}
-
-		// Handle regular navigation and actions
 		switch msg.String() {
 		case "down", "j":
 			if m.cursor < len(m.steps)-1 {
@@ -100,16 +56,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 		case "enter":
-			if m.cursor == 8 {
-				// Start the project name and Git URL input
-				m.stepInput = 0
-				m.inputPrompt = "Enter Project Name"
-				m.textInput.SetValue("")
-				m.textInput.Focus()
-			} else {
-				// Toggle step selection
-				m.selected[m.cursor] = !m.selected[m.cursor]
-			}
+			// Toggle step selection
+			m.selected[m.cursor] = !m.selected[m.cursor]
 		case "q", "esc":
 			// Quit without executing commands
 			return m, tea.Quit
@@ -125,14 +73,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // Render the UI
 func (m model) View() string {
 	var builder strings.Builder
-
-	if m.stepInput != -1 {
-		// Render the input prompt
-		builder.WriteString(fmt.Sprintf("%s:\n", m.inputPrompt))
-		builder.WriteString(m.textInput.View())
-		builder.WriteString("\n\nPress 'Enter' to confirm or 'Esc' to cancel.\n")
-		return builder.String()
-	}
 
 	// Render the main checklist
 	builder.WriteString("Server Setup Checklist\n\n")
@@ -162,24 +102,87 @@ func executeSetupSteps(m model) {
 apt install -y php8.3 libapache2-mod-php php8.3-mysql php8.3-gd php8.3-curl php8.3-xml composer`,
 		5: "apt install -y nodejs npm && npm install -g n && n 20",
 		6: `useradd app && usermod -aG sudo,www-data app`,
-		7: `mkdir -p /home/app/.ssh && cp /home/root/.ssh/authorized_keys /home/app/.ssh/authorized_keys && chown -R app:app /home/app/.ssh`,
-		8: fmt.Sprintf(`git clone %s /var/www/%s && chown -R www-data:www-data /var/www/%s`,
-			m.inputData["git_url"], m.inputData["project_name"], m.inputData["project_name"]),
-		9: fmt.Sprintf(`echo '<VirtualHost *:80>
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+
+	for i, stepSelected := range m.selected {
+		if stepSelected {
+			fmt.Printf("Running: %s...\n", m.steps[i])
+
+			// Prompt for inputs if needed
+
+			if i == 7 { // Set up SSH and GitHub key
+				fmt.Println("Paste public SSH keys to add to /home/app/.ssh/authorized_keys (leave empty to finish):")
+				var keys []string
+				for {
+					fmt.Print("> ")
+					key, _ := reader.ReadString('\n')
+					key = strings.TrimSpace(key)
+					if key == "" {
+						break
+					}
+					keys = append(keys, key)
+				}
+
+				// Create SSH directory and authorized_keys file with the collected keys
+				setupSSHDir := `
+mkdir -p /home/app/.ssh &&
+chmod 700 /home/app/.ssh &&
+touch /home/app/.ssh/authorized_keys &&
+chmod 600 /home/app/.ssh/authorized_keys &&
+chown -R app:app /home/app/.ssh`
+				runCommand(setupSSHDir)
+
+				if len(keys) > 0 {
+					writeKeysCmd := fmt.Sprintf(`echo "%s" > /home/app/.ssh/authorized_keys`, strings.Join(keys, "\n"))
+					runCommand(writeKeysCmd)
+				}
+
+				// Generate SSH key for the app user
+				fmt.Println("Generating SSH key for app user...")
+				generateSSHKeyCmd := `su - app -c "ssh-keygen -t rsa -b 4096 -f /home/app/.ssh/id_rsa -q -N ''"`
+				runCommand(generateSSHKeyCmd)
+
+				// Read the public key to display it
+				publicKeyCmd := `cat /home/app/.ssh/id_rsa.pub`
+				fmt.Println("Copy the following SSH public key to your GitHub settings (https://github.com/settings/keys):")
+				runCommand(publicKeyCmd)
+
+				// Wait for the user to confirm
+				fmt.Println("\nOnce the key is added to GitHub, press Enter to continue.")
+				_, _ = reader.ReadString('\n') // Wait for user input
+			}
+
+			if i == 8 { // Clone project repository
+				fmt.Print("Enter Project Name: ")
+				projectName, _ := reader.ReadString('\n')
+				projectName = strings.TrimSpace(projectName)
+
+				fmt.Print("Enter Git URL: ")
+				gitURL, _ := reader.ReadString('\n')
+				gitURL = strings.TrimSpace(gitURL)
+
+				commands[8] = fmt.Sprintf(`git clone %s /var/www/%s && chown -R www-data:www-data /var/www/%s`,
+					gitURL, projectName, projectName)
+			}
+
+			if i == 9 { // Configure Apache virtual host
+				fmt.Print("Enter Project Name: ")
+				projectName, _ := reader.ReadString('\n')
+				projectName = strings.TrimSpace(projectName)
+
+				commands[9] = fmt.Sprintf(`echo '<VirtualHost *:80>
 DocumentRoot /var/www/%s/public
 <Directory /var/www/%s/public>
 AllowOverride All
 Options +Indexes
 </Directory>
 </VirtualHost>' | tee /etc/apache2/sites-available/%s.conf &&
-a2ensite %s.conf`, m.inputData["project_name"], m.inputData["project_name"], m.inputData["project_name"], m.inputData["project_name"]),
-		10: "systemctl restart apache2",
-		11: "reboot",
-	}
+a2ensite %s.conf`, projectName, projectName, projectName, projectName)
+			}
 
-	for i, stepSelected := range m.selected {
-		if stepSelected {
-			fmt.Printf("Running: %s...\n", m.steps[i])
+			// Run the command
 			runCommand(commands[i])
 		}
 	}
